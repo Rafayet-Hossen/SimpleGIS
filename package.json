@@ -1,0 +1,15 @@
+{
+  "name": "simple-gis",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4"
+  }
+}
