@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Simple GIS Tracker</title>
+    {% load static %}
+    <!-- Leaflet CSS loaded directly from bun-installed node_modules -->
+    <link rel="stylesheet" href="{% static 'leaflet/dist/leaflet.css' %}" />
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        display: flex;
+        height: 100vh;
+      }
+      #sidebar {
+        width: 320px;
+        padding: 20px;
+        background: #f8fafc;
+        box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+        box-sizing: border-box;
+        z-index: 1000;
+      }
+      #map {
+        flex: 1;
+        height: 100%;
+      }
+      input,
+      textarea,
+      button {
+        width: 100%;
+        margin-bottom: 12px;
+        padding: 8px;
+        box-sizing: border-box;
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+      }
+      button {
+        background: #0284c7;
+        color: white;
+        font-weight: bold;
+        cursor: pointer;
+        border: none;
+      }
+      button:hover {
+        background: #0369a1;
+      }
+      .hint {
+        font-size: 0.85rem;
+        color: #64748b;
+        margin-bottom: 15px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="sidebar">
+      <h2>Add Location Pin</h2>
+      <p class="hint">
+        Click anywhere on the map to place a pin and autofill the coordinates.
+      </p>
+
+      <form method="POST">
+        {% csrf_token %}
+        <label>Title:</label>
+        <input
+          type="text"
+          name="name"
+          required
+          placeholder="e.g., Central Library"
+        />
+
+        <label>Description:</label>
+        <textarea
+          name="description"
+          rows="3"
+          placeholder="Notes about this location..."
+        ></textarea>
+
+        <label>Latitude:</label>
+        <input
+          type="number"
+          step="any"
+          id="lat-input"
+          name="latitude"
+          required
+          readonly
+        />
+
+        <label>Longitude:</label>
+        <input
+          type="number"
+          step="any"
+          id="lng-input"
+          name="longitude"
+          required
+          readonly
+        />
+
+        <button type="submit">Save Location</button>
+      </form>
+    </div>
+
+    <div id="map"></div>
+
+    <!-- Leaflet JS from node_modules -->
+    <script src="{% static 'leaflet/dist/leaflet.js' %}"></script>
+    <script>
+      // 1. Initialize Leaflet Map (Dhaka Center)
+      const map = L.map("map").setView([23.8103, 90.4125], 12);
+
+      // 2. Add OpenStreetMap tile layer
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "© OpenStreetMap contributors",
+      }).addTo(map);
+
+      let tempMarker = null;
+
+      // 3. Normal Map Click: Form Coordinate Fill
+      map.on("click", function (e) {
+        const lat = e.latlng.lat;
+        const lng = e.latlng.lng;
+
+        document.getElementById("lat-input").value = lat.toFixed(6);
+        document.getElementById("lng-input").value = lng.toFixed(6);
+
+        if (tempMarker) {
+          tempMarker.setLatLng(e.latlng);
+        } else {
+          tempMarker = L.marker(e.latlng).addTo(map);
+        }
+      });
+
+      // 4. Two-Point Distance Selector Logic
+      let selectedMarkers = [];
+      let routeLayer = null;
+      let distancePopup = null;
+
+      function clearSelectionTooltips() {
+        selectedMarkers.forEach((item) => {
+          if (item.layer && item.layer.unbindTooltip) {
+            item.layer.unbindTooltip();
+          }
+        });
+      }
+
+      function handleMarkerSelect(markerLayer, markerName) {
+        const coords = markerLayer.getLatLng();
+
+        // Prevent clicking the same marker twice; clicking again deselects it
+        if (
+          selectedMarkers.length === 1 &&
+          selectedMarkers[0].layer === markerLayer
+        ) {
+          markerLayer.unbindTooltip();
+          selectedMarkers = [];
+          return;
+        }
+
+        // If starting a new pair selection, clean up previous route and labels
+        if (selectedMarkers.length === 0) {
+          if (routeLayer) {
+            map.removeLayer(routeLayer);
+            routeLayer = null;
+          }
+          if (distancePopup) {
+            map.removeLayer(distancePopup);
+            distancePopup = null;
+          }
+          clearSelectionTooltips();
+        }
+
+        selectedMarkers.push({
+          name: markerName,
+          latlng: coords,
+          layer: markerLayer,
+        });
+
+        // Close marker popup so tooltip and route popup are prominent
+        if (markerLayer.closePopup) {
+          markerLayer.closePopup();
+        }
+
+        if (selectedMarkers.length === 1) {
+          markerLayer
+            .bindTooltip(`<strong>Start (A):</strong> ${markerName}`, {
+              permanent: true,
+              direction: "top",
+            })
+            .openTooltip();
+        }
+
+        if (selectedMarkers.length === 2) {
+          const p1 = selectedMarkers[0];
+          const p2 = selectedMarkers[1];
+
+          markerLayer
+            .bindTooltip(`<strong>End (B):</strong> Calculating distance...`, {
+              permanent: true,
+              direction: "top",
+            })
+            .openTooltip();
+
+          // Calculate direct straight-line distance as baseline
+          const straightDistanceMeters = p1.latlng.distanceTo(p2.latlng);
+          const straightDistanceKm = (straightDistanceMeters / 1000).toFixed(2);
+
+          // OSRM Public Routing API (Longitude, Latitude order)
+          const url = `https://router.project-osrm.org/route/v1/driving/${p1.latlng.lng},${p1.latlng.lat};${p2.latlng.lng},${p2.latlng.lat}?overview=full&geometries=geojson`;
+
+          const showFallbackDirectRoute = () => {
+            if (routeLayer) map.removeLayer(routeLayer);
+            routeLayer = L.polyline([p1.latlng, p2.latlng], {
+              color: "#2563eb",
+              weight: 4,
+              dashArray: "6, 8",
+              opacity: 0.85,
+            }).addTo(map);
+
+            map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
+
+            const midLat = (p1.latlng.lat + p2.latlng.lat) / 2;
+            const midLng = (p1.latlng.lng + p2.latlng.lng) / 2;
+
+            if (distancePopup) map.removeLayer(distancePopup);
+            distancePopup = L.popup({ closeOnClick: false })
+              .setLatLng([midLat, midLng])
+              .setContent(
+                `
+                <div style="text-align: center; min-width: 170px;">
+                  <strong style="color: #1e293b;">${p1.name} ➔ ${p2.name}</strong><br>
+                  <div style="font-size: 1.2rem; color: #2563eb; font-weight: bold; margin: 4px 0;">
+                    📏 ${straightDistanceKm} km
+                  </div>
+                  <span style="color: #64748b; font-size: 0.85rem;">
+                    Direct straight-line distance
+                  </span>
+                </div>
+              `,
+              )
+              .openOn(map);
+          };
+
+          fetch(url)
+            .then((response) => {
+              if (!response.ok) throw new Error("Routing request failed");
+              return response.json();
+            })
+            .then((data) => {
+              if (!data.routes || data.routes.length === 0) {
+                showFallbackDirectRoute();
+                return;
+              }
+
+              const route = data.routes[0];
+              const roadDistanceKm = (route.distance / 1000).toFixed(2);
+              const durationMinutes = Math.round(route.duration / 60);
+
+              if (routeLayer) map.removeLayer(routeLayer);
+              if (distancePopup) map.removeLayer(distancePopup);
+
+              routeLayer = L.geoJSON(route.geometry, {
+                style: {
+                  color: "#2563eb",
+                  weight: 5,
+                  opacity: 0.85,
+                },
+              }).addTo(map);
+
+              map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
+
+              const midLat = (p1.latlng.lat + p2.latlng.lat) / 2;
+              const midLng = (p1.latlng.lng + p2.latlng.lng) / 2;
+
+              distancePopup = L.popup({ closeOnClick: false })
+                .setLatLng([midLat, midLng])
+                .setContent(
+                  `
+                  <div style="text-align: center; min-width: 170px;">
+                    <strong style="color: #1e293b;">${p1.name} ➔ ${p2.name}</strong><br>
+                    <div style="font-size: 1.2rem; color: #2563eb; font-weight: bold; margin: 4px 0;">
+                      🚗 ${roadDistanceKm} km
+                    </div>
+                    <span style="color: #64748b; font-size: 0.85rem;">
+                      Est. Driving Time: ~${durationMinutes} mins
+                    </span>
+                    <div style="color: #94a3b8; font-size: 0.75rem; margin-top: 4px;">
+                      Straight-line: ${straightDistanceKm} km
+                    </div>
+                  </div>
+                `,
+                )
+                .openOn(map);
+            })
+            .catch((err) => {
+              console.warn(
+                "Road routing unavailable, showing direct route:",
+                err,
+              );
+              showFallbackDirectRoute();
+            })
+            .finally(() => {
+              markerLayer
+                .bindTooltip(`<strong>End (B):</strong> ${p2.name}`, {
+                  permanent: true,
+                  direction: "top",
+                })
+                .openTooltip();
+              selectedMarkers = [];
+            });
+        }
+      }
+
+      // 5. Load markers from Django API and bind click events
+
+      fetch("/api/markers/")
+        .then((response) => response.json())
+        .then((data) => {
+          L.geoJSON(data, {
+            onEachFeature: function (feature, layer) {
+              const name = feature.properties.name || "Unnamed Point";
+              const description =
+                feature.properties.description || "No description";
+
+              // Bind standard hover/click popup
+              layer.bindPopup(
+                `<strong>${name}</strong><br>${description}<br><em style="font-size:0.8rem; color:#0284c7;">Click to select for distance measurement</em>`,
+              );
+
+              // Listen for click event on the marker
+              layer.on("click", function (e) {
+                L.DomEvent.stopPropagation(e);
+                handleMarkerSelect(layer, name);
+              });
+            },
+          }).addTo(map);
+        });
+    </script>
+  </body>
+</html>

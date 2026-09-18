@@ -10,7 +10,7 @@ def map_view(request):
         longitude = request.POST.get("longitude")
 
         if name and latitude and longitude:
-            LocationMarker.object.crate(
+            LocationMarker.objects.create(
                 name=name,
                 description=description,
                 latitude=float(latitude),
@@ -18,7 +18,7 @@ def map_view(request):
             )
             return redirect("map_view")
 
-        return render(request,"markers/map.html")
+    return render(request, "markers/map.html")
 
 def marker_data(request):
 
@@ -27,18 +27,18 @@ def marker_data(request):
     features = []
     for marker in markers:
         features.append({
-            "type":"Feature",
-            "geometry":{
-                "type":"Point",
-                "coordinates":[marker.latitude,marker.longitude]
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [marker.longitude, marker.latitude]
             },
             "properties": {
-                "name":marker.name,
-                "description":marker.description,
+                "name": marker.name,
+                "description": marker.description,
             },
         })
 
-    geojson = {"type":"FeatureCollection","features":features}
+    geojson = {"type": "FeatureCollection", "features": features}
 
     return JsonResponse(geojson)
 
